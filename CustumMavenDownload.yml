@@ -1,0 +1,29 @@
+trigger:
+  branches:
+    include:
+    - refs/heads/dev
+name: $(date:yyyyMMdd)$(rev:.r)
+jobs:
+- job: Job_1
+  displayName: Agent job 1
+  pool:
+    vmImage: windows-latest
+  steps:
+
+  - task: PowerShell@2
+    displayName: Install WGET on Windows Agent
+    inputs:
+      targetType: inline
+      script: choco install wget -y
+  - task: CmdLine@2
+    displayName: 'Downloading :: apache-maven-3.6.3'
+    inputs:
+      script: >
+        echo Downloading Custom Version :: apache-maven-3.6.3
+
+
+        wget https://www-eu.apache.org/dist/maven/maven-3/3.6.3/binaries/apache-maven-3.6.3-bin.zip
+  - task: ExtractFiles@1
+    displayName: 'Extract :: apache-maven-3.6.3'
+    inputs:
+      destinationFolder: $(build.sourcesdirectory)/maven/
