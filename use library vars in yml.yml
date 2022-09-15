@@ -1,0 +1,14 @@
+variables:
+- group: var_group
+- name: my_var
+  value: $[variables.key1]
+trigger:
+- master
+
+pool:
+  vmImage: ubuntu-latest
+
+steps:
+- script: echo Hello, $(my_var)!
+  displayName: 'Run a one-line script'
+#OUTPUT: echo Hello, keyvalue1!
