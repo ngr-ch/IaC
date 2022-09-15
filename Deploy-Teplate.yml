@@ -1,0 +1,43 @@
+
+
+jobs:
+- job: Job
+  steps:
+    - task: DownloadBuildArtifacts@1
+      inputs:
+        buildType: 'current'
+        downloadType: 'single'
+        downloadPath: '$(System.ArtifactsDirectory)'
+  
+    - task: AzureResourceManagerTemplateDeployment@3
+      displayName: 'Azure Deployment:Create Azure App Service'
+      inputs:
+        deploymentScope: 'Resource Group'
+        azureResourceManagerConnection: 'azcon'   # ARM Service connection name
+        subscriptionId: '$(az_con)'       # subscriptionId # Stored as secret variable
+        action: 'Create Or Update Resource Group'
+        resourceGroupName: 'RG_Nagaraj'
+        location: 'East US'
+        templateLocation: 'Linked artifact'
+        csmFile: '$(System.DefaultWorkingDirectory)/**/linux-webapp-template.json'
+        overrideParameters: '-webAppName ngr-app123 -hostingPlanName ngr-app123-plan -appInsightsLocation "East US" -sku "F1 Free"'
+        deploymentMode: 'Incremental'
+
+    - task: Bash@3
+      displayName: 'Creating or Updating App'
+      inputs:
+        targetType: 'inline'
+        script: |
+          echo 'Waiting to be App Create & UP
+          sleep 60    
+    - task: AzureRmWebAppDeployment@4
+      displayName: 'Deploy Azure App Service'
+      inputs:
+        ConnectionType: 'AzureRM'
+        azureSubscription: 'azcon'   # ARM Service connection name
+        appType: 'webAppLinux'
+        WebAppName: 'ngr-app123'
+        packageForLinux: '$(System.ArtifactsDirectory)/**/*.war'
+        RuntimeStack: 'TOMCAT|8.5-jre8'
+        enableCustomDeployment: true
+        ExcludeFilesFromAppDataFlag: false

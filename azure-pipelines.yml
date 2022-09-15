@@ -1,0 +1,29 @@
+# IaS using multi yml's
+
+trigger:
+  branches:
+    include:
+    - master
+variables:
+- name: vmImage
+  value: ubuntu-latest
+- group: azvar_group
+- name: az_con
+  value: $[variables.subscriptionId]
+stages:
+  - stage: Build
+    displayName: 'Build Package'
+    jobs:
+      - template: Build-Template.yml
+        parameters:
+          vmImage: $(vmImage)
+
+  - stage: Deploy
+    displayName: 'Deploy Package'
+    condition: and(succeeded(), eq(variables['Build.SourceBranchName'], 'master'))
+    dependsOn: Build
+    jobs:
+      - template: Deploy-Teplate.yml
+        parameters:
+          vmImage: $(vmImage)
+          azsubid: $(az_con)
