@@ -1,0 +1,461 @@
+Deploying Terraform Infrastructure using Azure DevOps Pipelines Step by Step
+Azure DevOps is a hosted service to deploy CI/CD pipelines and today we are going to create a pipeline to deploy a Terraform configuration using an Azure DevOps pipeline.
+
+In this story, we will take a look at a step by step procedure to have our Azure DevOps Pipelines ready in few minutes.
+
+Check the Advanced version of this story, with more detail, including how to use Git to update Azure DevOps Repos.
+
+If you are interested to deploy GCP Infrastructure with Terraform using Azure DevOps read Deploying GCP Infrastructure using Terraform and Azure DevOps Pipelines Step by Step
+
+Note May 2020: the Terraform code was updated to AzureRM v2.x
+
+1. Prerequisites
+This is the list of prerequisites required to create a DevOps pipeline:
+
+Azure Subscription: If we don’t have an Azure subscription, we can create a free account at https://azure.microsoft.com before we start.
+Azure Service Principal: is an identity used to authenticate to Azure. Below are the instructions to create one.
+Azure Remote Backend for Terraform: we will store our Terraform state file in a remote backend location. We will need a Resource Group, Azure Storage Account and a Container. We can create the Remote Backend in advance (more info below) or let the Release Pipeline create one.
+Azure DevOps Account: we need an Azure DevOps account because is a separate service from the Azure cloud.
+1.1. Creating a Service Principal and a Client Secret
+Using a Service Principal, also known as SPN, is a best practice for DevOps or CI/CD environments.
+
+First, we need to authenticate to Azure. To authenticate using Azure CLI, we type:
+
+az login
+The process will launch the browser and after the authentication is complete we are ready to go.
+
+
+We will use the following command to get the list of Azure subscriptions:
+
+az account list --output table
+We can select the subscription using the following command (both subscription id and subscription name are accepted):
+
+az account set --subscription <Azure-SubscriptionId>
+Then create the service principal account using the following command:
+
+az ad sp create-for-rbac --role="Contributor" 
+--scopes="/subscriptions/SUBSCRIPTION_ID"
+This is the result:
+
+
+Note: as an option, we can add the -name parameter to add a descriptive name.
+
+az ad sp create-for-rbac --role="Contributor" 
+--scopes="/subscriptions/SUBSCRIPTION_ID" --name="Azure-DevOps"
+These values will be mapped to these Terraform variables:
+
+appId (Azure) → client_id (Terraform).
+password (Azure) → client_secret (Terraform).
+tenant (Azure) → tenant_id (Terraform).
+1.2. Configuring the Remote Backend to use Azure Storage with Azure CLI
+Execute the following Azure CLI script to create the storage account in Azure Storage in Bash or Azure Cloud Shell:
+
+RESOURCE_GROUP_NAME=kopicloud-tstate-rg
+STORAGE_ACCOUNT_NAME=kopicloudtfstate$RANDOM
+CONTAINER_NAME=tfstate
+# Create resource group
+az group create --name $RESOURCE_GROUP_NAME --location "West Europe"
+# Create storage account
+az storage account create --resource-group $RESOURCE_GROUP_NAME --name $STORAGE_ACCOUNT_NAME --sku Standard_LRS --encryption-services blob
+# Get storage account key
+ACCOUNT_KEY=$(az storage account keys list --resource-group $RESOURCE_GROUP_NAME --account-name $STORAGE_ACCOUNT_NAME --query [0].value -o tsv)
+# Create blob container
+az storage container create --name $CONTAINER_NAME --account-name $STORAGE_ACCOUNT_NAME --account-key $ACCOUNT_KEY
+echo "storage_account_name: $STORAGE_ACCOUNT_NAME"
+echo "container_name: $CONTAINER_NAME"
+echo "access_key: $ACCOUNT_KEY"
+1.3. Configuring the Remote Backend to use Azure Storage with PowerShell
+Execute the following Azure PowerShell script to create the storage account in Azure Storage:
+
+# Variables
+$azureSubscriptionId = "9c242362-6776-47d9-9db9-2aab2449703"
+$resourceGroup = "kopicloud-tstate-rg"
+$location = "westeurope"
+$random = -join ((0..9) | Get-Random -Count 5 | % {$_})
+$accountName = "kopicloudtfstate" + $random
+$containerName = "tfstate"
+# Set Default Subscription
+Select-AzSubscription -SubscriptionId $azureSubscriptionId
+# Create Resource Group
+New-AzResourceGroup -Name $resourceGroup -Location $location -Force
+# Create Storage Account
+$storageAccount = New-AzStorageAccount -ResourceGroupName $resourceGroup `
+  -Name $accountName `
+  -Location $location `
+  -SkuName Standard_RAGRS `
+  -Kind StorageV2 
+    
+# Get Storage Account Key
+$storageKey = (Get-AzStorageAccountKey -ResourceGroupName $resourceGroup `
+  -Name $accountName).Value[0]
+# Create Storage Container
+$ctx = $storageAccount.Context
+$container = New-AzStorageContainer -Name $containerName `
+  -Context $ctx -Permission blob
+# Results
+Write-Host 
+Write-Host ("Storage Account Name: " + $accountName)
+Write-Host ("Container Name: " + $container.Name)
+Write-Host ("Access Key: " + $storageKey)
+This is the result:
+
+
+1.4. Configuring the Remote Backend to use Azure Storage with Terraform
+We can also use Terraform to create the storage account in Azure Storage.
+
+We create a file called az-remote-backend-variables.tf and add this code:
+
+# company
+variable "company" {
+  type = string
+  description = "This variable defines the name of the company"
+}
+# environment
+variable "environment" {
+  type = string
+  description = "This variable defines the environment to be built"
+}
+# azure region
+variable "location" {
+  type = string
+  description = "Azure region where resources will be created"
+  default = "north europe"
+}
+Then we create the az-remote-backend-main.tf file that will configure the storage account:
+
+# Generate a random storage name
+resource "random_string" "tf-name" {
+  length = 8
+  upper = false
+  number = true
+  lower = true
+  special = false
+}
+# Create a Resource Group for the Terraform State File
+resource "azurerm_resource_group" "state-rg" {
+  name = "${lower(var.company)}-tfstate-rg"
+  location = var.location
+  
+  lifecycle {
+    prevent_destroy = true
+  }
+  tags = {
+    environment = var.environment
+  }
+}
+# Create a Storage Account for the Terraform State File
+resource "azurerm_storage_account" "state-sta" {
+  depends_on = [azurerm_resource_group.state-rg]
+  name = "${lower(var.company)}tf${random_string.tf-name.result}"
+  resource_group_name = azurerm_resource_group.state-rg.name
+  location = azurerm_resource_group.state-rg.location
+  account_kind = "StorageV2"
+  account_tier = "Standard"
+  access_tier = "Hot"
+  account_replication_type = "ZRS"
+  enable_https_traffic_only = true
+   
+  lifecycle {
+    prevent_destroy = true
+  }
+  tags = {
+    environment = var.environment
+  }
+}
+# Create a Storage Container for the Core State File
+resource "azurerm_storage_container" "core-container" {
+  depends_on = [azurerm_storage_account.state-sta]
+  name = "core-tfstate"
+  storage_account_name = azurerm_storage_account.state-sta.name
+}
+Finally, we create the file az-remote-backend-output.tf file that will show the output:
+
+output "terraform_state_resource_group_name" {
+  value = azurerm_resource_group.state-rg.name
+}
+output "terraform_state_storage_account" {
+  value = azurerm_storage_account.state-sta.name
+}
+output "terraform_state_storage_container_core" {
+  value = azurerm_storage_container.core-container.name
+}
+1.5. Creating an Azure DevOps Account:
+Azure DevOps is a separate service from the Azure cloud. We need to create an account at https://dev.azure.com, if we don’t have one.
+
+
+After we created our Azure DevOps account, we need to create a new Azure DevOps organization.
+
+1.6. Creating a New Azure Organization
+On the left side of the screen, click on the New organization link to create a new Azure DevOps organization:
+
+
+Click the Continue button to create a new organization.
+
+2. Creating a new Azure DevOps project
+The next step is to create a new Azure DevOps project. For this post, we will create a private project, with the Agile process:
+
+
+3. Initializing the Azure DevOps Repo
+The first step to build our pipeline is to set up a repo, clicking on Repos and then in Files.
+
+We have 4 options to initialize the repository:
+
+Clone code from to our computer
+Push an existing repository from the command line
+Import a repository
+Initialize with a README or gitignore
+To simplify this post, we are going to choose the last option.
+
+3.1. Initializing the Repo with a README or gitignore
+
+After we click the Initialize button, our repo will be populated with some files on the “master” branch.
+
+
+3.2. Uploading the Terraform Code to the Azure DevOps Repos
+The proper way is to use the git command to upload the code, however, to simplify the PoC we will create the two files manually.
+
+Please refer to the advanced version of this story to use Git with Azure DevOps Repos.
+
+We will copy the code we want to deploy inside a folder. In this case, the folder is called network.
+
+
+We click the Create button and then we add the following code to the file network-main.tf:
+
+# Define Terraform provider
+terraform {
+  required_version = ">= 0.12"
+}
+# Configure the Azure provider
+provider "azurerm" { 
+  environment = "public"
+  version = ">= 2.0.0"
+  features {}  
+}
+# Create a resource group for network
+resource "azurerm_resource_group" "network-rg" {
+  name = "${var.app_name}-${var.environment}-rg"
+  location = var.location
+  tags = {
+    application = var.app_name
+    environment = var.environment
+  }
+}
+# Create the network VNET
+resource "azurerm_virtual_network" "network-vnet" {
+  name = "${var.app_name}-${var.environment}-vnet"
+  address_space = [var.network-vnet-cidr]
+  resource_group_name = azurerm_resource_group.network-rg.name
+  location = azurerm_resource_group.network-rg.location
+  tags = {
+    application = var.app_name
+    environment = var.environment
+  }
+}
+# Create a subnet for Network
+resource "azurerm_subnet" "network-subnet" {
+  name = "${var.app_name}-${var.environment}-subnet"
+  address_prefix = var.network-subnet-cidr
+  virtual_network_name = azurerm_virtual_network.network-vnet.name
+  resource_group_name = azurerm_resource_group.network-rg.name
+}
+Then we create the file network-variable.tf:
+
+## Application - Variables ##
+# company name 
+variable "company" {
+  type = string
+  description = "The company name used to build resources"
+  default = "kopicloud"
+}
+# application name 
+variable "app_name" {
+  type = string
+  description = "The application name used to build resources"
+  default = "win-iis"
+}
+# application or company environment
+variable "environment" {
+  type = string
+  description = "The environment to be built"
+  default = "development"
+}
+# azure region
+variable "location" {
+  type = string
+  description = "Azure region where resources will be created"
+  default = "north europe"
+}
+## Network - Variables ##
+variable "network-vnet-cidr" {
+  type = string
+  description = "The CIDR of the network VNET"
+  default = "10.127.0.0/16"
+}
+variable "network-subnet-cidr" {
+  type = string
+  description = "The CIDR for the network subnet"
+  default = "10.127.1.0/24"
+}
+And this is the view of the Azure DevOps Repos / Files:
+
+
+4. Installing Required Azure DevOps Extensions
+Install the Terraform Build & Release Tasks extension from the Marketplace:
+
+
+5. Creating a new Azure DevOps Build Pipeline
+Now we are ready to build our first Azure DevOps Build Pipeline together. We click on the Pipelines option, located on the left.
+
+
+We click on the Create Pipeline button and select Use the classic editor to create a pipeline without YAML option, on the Where is your code? page.
+
+
+Then select the Azure Repos Git option and select the project, repository, and the branch where we have our Terraform code.
+
+
+Then select the Empty job template, locate on the top of the screen:
+
+
+We change the name of the agent:
+
+
+Then we click the plus sign (+) and add the copy files task. Add a job with type Copy Files.
+
+
+Choose the folder where we will create our files main and variables, and choose to copy all content.
+
+We will set the target folder as $(build.artifactstagingdirectory)/Terraform
+
+
+Add a job with type Publish Build Artifacts and leave it with default parameters:
+
+
+In the Triggers tab, check the Enable continuous integration checkbox and click on the Save & queue button.
+
+
+Then click the Save and run button to launch our pipeline.
+
+
+And this is the result screen:
+
+
+If the status of the job is Sucess, we are ready for the next step, where we are going to create the Release Pipeline.
+
+6. Creating an Azure DevOps Release Pipeline
+On this stage, we will use the artifact generate on the build pipeline and create a Stage task with these following tasks:
+
+Terraform Installer (Install Terraform)
+Terraform CLI (Terraform Init)
+Terraform CLI (Terraform Validate)
+Terraform CLI (Terraform Plan)
+Terraform CLI (Terraform Apply)
+For all these tasks we will use the Terraform Build & Release Tasks extension from the Marketplace (installed on point 4).
+
+This is the final picture:
+
+
+6.1. Creating the Release Pipeline
+We click on the Pipeline menu (located on the left) and then on the Release option. We click on the New pipeline button to create a new Azure DevOps Release Pipeline.
+
+
+In the Select a template page, we choose an Empty job template:
+
+
+6.2 Creating the Artifact
+Then we click on Add an artifact button.
+
+In the Add an artifact page, we choose the Build button and configure the Source (build pipeline) to use the build pipeline created on the previous step.
+
+
+We click the Add button, and then click on the lightning icon and activate the CD (Continuous Deployment):
+
+
+We close the Continuous deployment trigger page and rename the pipeline:
+
+
+We click on the Save icon, to save the pipeline.
+
+
+6.3. Configuring the Stage
+Now, we need to configure the Stages. Click on the Stage 1 button to rename the stage name.
+
+
+We close the Stage name page and then click on the 1 job, 0 task link on Terraform button.
+
+
+We click on the plus sign (+), next to the Agent job and search for terraform.
+
+6.3.1. Terraform Installer
+We select the Terraform Installer task and click on the Add button next to it.
+
+
+The Terraform Installer task was added with the latest version of Terraform
+
+
+6.3.2. Terraform Init
+Then we select the Terraform CLI task and click on the Add button next to it.
+
+In this step, we will configure Terraform CLI for Terraform Init.
+
+Configure the init Command, the Configuration Directory to use the drop/Terraform folder of the Build Pipeline and select azurerm in the Backend Type.
+
+
+Set the Configuration Directory to use the drop/Terraform folder of the Build Pipeline.
+
+
+Expand the AzureRM Backend Configuration and select an existing Azure Subscription. If we don’t have an Azure Subscription configured, click on + New button to configure one.
+
+
+Then, we select the Service principal (manual) option.
+
+
+On the New Azure service connection page, we will use the values from point 1.1. We configure our connection and click on the Verify and Save button.
+
+
+Then, we configure the Azure Remote Backend and we have a few options:
+
+Use the Create Backend (If not exists) option
+Use a Remote Backend created with scripts from points 1.2, 1.3 and 1.4
+Automate the process adding an extra task on the pipeline.
+In this case, we are going to use the first option, because it is the simplest one.
+
+
+6.3.3. Terraform Validate
+Then we select the Terraform CLI task and click on the Add button next to it.
+
+Then we configure the Terraform Validate, setting the Command to validate and the Configuration Directory to use the drop/Terraform folder of the Build Pipeline.
+
+
+Terraform validate task
+6.3.4. Terraform Plan
+Then we select the Terraform CLI task and click on the Add button next to it.
+
+Then we configure the Terraform Plan, setting the Command to plan, the Configuration Directory to use the drop/Terraform folder of the Build Pipeline and Environment Azure Subscription.
+
+
+Terraform plan task
+6.3.5. Terraform Apply
+On the final step, we select the Terraform CLI task and click on the Add button next to it.
+
+Then we configure the Terraform Apply task, setting the Command to apply, the Configuration Directory to use the drop/Terraform folder of the Build Pipeline and Environment Azure Subscription.
+
+
+Terraform apply task
+6.4. Launching the Release Pipeline
+And we are ready to go! Click on the Save and then click on the Create release button.
+
+
+
+Release Pipeline in progress
+and works 🙂
+
+
+Release Pipeline succeeded
+
+Agent job result
+And that’s all folks. If you liked this story, please show your support by 👏 for this story. Thank you for reading!
+
+274
+
+
+9
