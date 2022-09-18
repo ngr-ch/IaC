@@ -1,0 +1,21 @@
+
+
+
+variable "droplet_names" {
+  type    = list(string)
+  default = ["first", "second", "third"]
+}
+
+variable "cosmos_db_containers_name" {
+  type = map(string)
+  default = {
+    Appearance = 300
+    Article    = 400
+    Colour     = 500
+  }
+
+resource "aws_iam_user" "iamuser" {
+  for_each = var.account_name
+  name = "${each.key}"
+  ttl  = "${each.value}"
+}
